@@ -1,0 +1,39 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Summary {
+  id          String   @id @default(cuid())
+  youtubeUrl  String
+  videoTitle  String?
+  transcript  String?
+  summary     String
+  keyPoints   String?
+  motivational String?
+  timestamps  String?
+  insight     String?
+  deviceId    String?
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+  shares      Share[]
+
+  @@map("summaries")
+}
+
+model Share {
+  id        String   @id @default(cuid())
+  slug      String   @unique
+  summaryId String
+  pin       String?
+  views     Int      @default(0)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  summary Summary @relation(fields: [summaryId], references: [id], onDelete: Cascade)
+
+  @@map("shares")
+}
