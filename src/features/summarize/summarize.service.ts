@@ -21,21 +21,42 @@ function extractVideoId(url: string): string | null {
 const MAX_TRANSCRIPT_LENGTH = 8_000;
 
 async function fetchTranscript(videoId: string): Promise<string> {
-  try {
-    const items = await YoutubeTranscript.fetchTranscript(videoId);
-    const text = items.map(i => i.text).join(' ');
-    return text.length > MAX_TRANSCRIPT_LENGTH
-      ? text.slice(0, MAX_TRANSCRIPT_LENGTH) + '... [transcript truncated]'
-      : text;
-  } catch (err: any) {
-    if (err.message?.includes('disabled')) {
-      throw new BadRequestError('Transcripts are disabled for this video');
+  const tryFetch = async (attempt: number): Promise<string> => {
+    try {
+      const items = await YoutubeTranscript.fetchTranscript(videoId, {
+        lang: 'en',
+      });
+      const text = items.map(i => i.text).join(' ');
+      return text.length > MAX_TRANSCRIPT_LENGTH
+        ? text.slice(0, MAX_TRANSCRIPT_LENGTH) + '... [transcript truncated]'
+        : text;
+    } catch (err: any) {
+      const msg = err.message || '';
+      if (msg.includes('disabled')) {
+        if (attempt < 2) {
+          await new Promise(r => setTimeout(r, 1000));
+          return tryFetch(attempt + 1);
+        }
+        throw new BadRequestError('Transcripts are disabled for this video');
+      }
+      if (msg.includes('unavailable')) {
+        throw new BadRequestError('This video is unavailable');
+      }
+      if (msg.includes('too many requests') || msg.includes('captcha')) {
+        if (attempt < 3) {
+          await new Promise(r => setTimeout(r, 3000 * attempt));
+          return tryFetch(attempt + 1);
+        }
+        throw new BadRequestError('YouTube is rate-limiting. Please try again later.');
+      }
+      if (attempt < 2) {
+        await new Promise(r => setTimeout(r, 1000));
+        return tryFetch(attempt + 1);
+      }
+      throw new BadRequestError('Could not fetch transcript. The video may not have captions.');
     }
-    if (err.message?.includes('unavailable')) {
-      throw new BadRequestError('This video is unavailable');
-    }
-    throw new BadRequestError('Could not fetch transcript. The video may not have captions.');
-  }
+  };
+  return tryFetch(1);
 }
 
 async function getVideoTitle(videoId: string): Promise<string | null> {
