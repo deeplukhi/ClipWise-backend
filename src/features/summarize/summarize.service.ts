@@ -21,42 +21,86 @@ function extractVideoId(url: string): string | null {
 const MAX_TRANSCRIPT_LENGTH = 8_000;
 
 async function fetchTranscript(videoId: string): Promise<string> {
-  const tryFetch = async (attempt: number): Promise<string> => {
-    try {
-      const items = await YoutubeTranscript.fetchTranscript(videoId, {
-        lang: 'en',
-      });
-      const text = items.map(i => i.text).join(' ');
-      return text.length > MAX_TRANSCRIPT_LENGTH
-        ? text.slice(0, MAX_TRANSCRIPT_LENGTH) + '... [transcript truncated]'
-        : text;
-    } catch (err: any) {
-      const msg = err.message || '';
-      if (msg.includes('disabled')) {
-        if (attempt < 2) {
-          await new Promise(r => setTimeout(r, 1000));
-          return tryFetch(attempt + 1);
-        }
-        throw new BadRequestError('Transcripts are disabled for this video');
-      }
-      if (msg.includes('unavailable')) {
-        throw new BadRequestError('This video is unavailable');
-      }
-      if (msg.includes('too many requests') || msg.includes('captcha')) {
-        if (attempt < 3) {
-          await new Promise(r => setTimeout(r, 3000 * attempt));
-          return tryFetch(attempt + 1);
-        }
-        throw new BadRequestError('YouTube is rate-limiting. Please try again later.');
-      }
-      if (attempt < 2) {
-        await new Promise(r => setTimeout(r, 1000));
-        return tryFetch(attempt + 1);
-      }
-      throw new BadRequestError('Could not fetch transcript. The video may not have captions.');
+  const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+  const CONSENT = 'YES+';
+
+  const parseTranscriptXML = async (url: string): Promise<string> => {
+    const resp = await fetch(url, {
+      headers: { 'User-Agent': UA, 'Accept-Language': 'en-US,en;q=0.9', Cookie: `CONSENT=${CONSENT}` },
+    });
+    if (!resp.ok) throw new Error('Transcript fetch failed');
+    const xml = await resp.text();
+    const texts: string[] = [];
+    const regex = /<text[^>]*>([^<]*)<\/text>/g;
+    let match;
+    while ((match = regex.exec(xml)) !== null) {
+      const t = match[1].replace(/&amp;/g, '&').replace(/&#39;/g, "'").replace(/&quot;/g, '"').replace(/&lt;/g, '<').replace(/&gt;/g, '>');
+      if (t.trim()) texts.push(t);
     }
+    if (texts.length === 0) throw new Error('No transcript text found');
+    return texts.join(' ');
   };
-  return tryFetch(1);
+
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    // Approach 1: InnerTube WEB API with cookies
+    try {
+      const resp = await fetch('https://www.youtube.com/youtubei/v1/player?prettyPrint=false', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'User-Agent': UA,
+          'Accept-Language': 'en-US,en;q=0.9',
+          Cookie: `CONSENT=${CONSENT}`,
+        },
+        body: JSON.stringify({
+          context: { client: { clientName: 'WEB', clientVersion: '2.20241202.00.00' } },
+          videoId,
+        }),
+      });
+      if (resp.ok) {
+        const data: any = await resp.json();
+        const tracks = data?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
+        if (Array.isArray(tracks) && tracks.length > 0) {
+          const track = tracks.find((t: any) => t.languageCode === 'en') || tracks[0];
+          const text = await parseTranscriptXML(track.baseUrl);
+          if (text.length > MAX_TRANSCRIPT_LENGTH) return text.slice(0, MAX_TRANSCRIPT_LENGTH) + '... [transcript truncated]';
+          return text;
+        }
+      }
+    } catch {}
+
+    // Approach 2: Library
+    try {
+      const items = await YoutubeTranscript.fetchTranscript(videoId);
+      const text = items.map(i => i.text).join(' ');
+      if (text.length > MAX_TRANSCRIPT_LENGTH) return text.slice(0, MAX_TRANSCRIPT_LENGTH) + '... [transcript truncated]';
+      return text;
+    } catch {}
+
+    // Approach 3: Direct page scrape
+    try {
+      const pageResp = await fetch(`https://www.youtube.com/watch?v=${videoId}`, {
+        headers: { 'User-Agent': UA, 'Accept-Language': 'en-US,en;q=0.9', Cookie: `CONSENT=${CONSENT}` },
+      });
+      if (pageResp.ok) {
+        const html = await pageResp.text();
+        const match = html.match(/ytInitialPlayerResponse\s*=\s*({.*?});/s);
+        if (match) {
+          const player = JSON.parse(match[1]);
+          const tracks = player?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
+          if (Array.isArray(tracks) && tracks.length > 0) {
+            const track = tracks.find((t: any) => t.languageCode === 'en') || tracks[0];
+            const text = await parseTranscriptXML(track.baseUrl);
+            if (text.length > MAX_TRANSCRIPT_LENGTH) return text.slice(0, MAX_TRANSCRIPT_LENGTH) + '... [transcript truncated]';
+            return text;
+          }
+        }
+      }
+    } catch {}
+
+    if (attempt < 3) await new Promise(r => setTimeout(r, 2000 * attempt));
+  }
+  throw new BadRequestError('Could not fetch transcript. The video may not have captions.');
 }
 
 async function getVideoTitle(videoId: string): Promise<string | null> {
