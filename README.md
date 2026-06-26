@@ -1,5 +1,5 @@
 
-<h1 align="center">✂️ ClipWise Backend</h1>
+<h1 align="center"> ClipWise Backend</h1>
 
 <p align="center">
   <strong>Express · Prisma · TypeScript · OpenRouter AI</strong><br>
